@@ -1,19 +1,20 @@
-#pragma once
-
 #include <iostream>
 #include <chrono>
-#include "distance.hpp"
-#include "data.hpp"
-#include "kmeans.hpp"
+#include "utils/distance.hpp"
+#include "utils/data.hpp"
+#include "utils/kmeans.hpp"
+#include "utils/recall.hpp"
 
 int main(){
-    GraphData base("data/siftsmall/siftsmall_base.fvecs");
-    GraphData query("data/siftsmall/siftsmall_query.fvecs");
+    GraphData<float> base("data/siftsmall/siftsmall_base.fvecs");
+    GraphData<float> query("data/siftsmall/siftsmall_query.fvecs");
+    GraphData<int> groundtruth("data/siftsmall/siftsmall_groundtruth.ivecs");
 
     int dim = base.get_vector_dim();
     int query_size = query.get_num_vectors();
     std::vector<std::vector<float>> base_data = base.get_data();
     std::vector<std::vector<float>> query_data = query.get_data();
+    std::vector<std::vector<int>> gt_data = groundtruth.get_data();
 
     /*
     Parameters for K-means clustering:
@@ -30,9 +31,9 @@ int main(){
             search for k nearest neighbors
     */
 
-    int k_cluster = 8;
-    int k_max = base.get_num_vectors()*0.025;
-    int k_cluster_search = k_max*0.1;
+    int k_cluster = 16;
+    int k_max = base.get_num_vectors()*0.1;
+    int k_cluster_search = k_max*0.3;
     int k_search = 10;
 
     KMeans kmeans(k_cluster, dim, base_data);
@@ -41,7 +42,7 @@ int main(){
     // Run bisect kmeans and build index
     auto start_build = std::chrono::high_resolution_clock::now();
     kmeans.build_index(k_max);
-    std::map<int, std::vector<std::vector<float>>> IVF = kmeans.get_IVF();
+    std::map<int, std::vector<std::pair<int, std::vector<float>>>> IVF = kmeans.get_IVF();
     auto stop_build = std::chrono::high_resolution_clock::now();
     auto build_time = std::chrono::duration_cast<std::chrono::seconds>(stop_build-start_build);
 
@@ -53,10 +54,14 @@ int main(){
 
     // Throughput and latency
     auto throughput = double(query_size) / search_time.count();
-    auto latency = search_time.count() * 1000 / double(query_size);
+    auto latency = double(search_time.count()) * 1000 / query_size;
 
     // Get lists of k distances sorted in ascending order
     std::vector<std::vector<std::pair<int, double>>> results = ann.get_dist_lists();
+
+    //Calculate recall
+    Recall recall(gt_data, results);
+    double recall_val = recall.get_recall();
 
     // Print the results
     for(int i = 0; i < results.size(); ++i){
@@ -73,8 +78,6 @@ int main(){
     std::cout << "Search time: " << search_time.count() << "s" << std::endl;
     std::cout << "Throughput: " << throughput << " query/s" << std::endl;
     std::cout << "Latency: " << latency << " ms/query" << std::endl;
-
-
-
+    std::cout << "Recall: " << recall_val << std::endl;
 
 }
