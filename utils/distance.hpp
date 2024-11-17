@@ -1,112 +1,87 @@
 #pragma once
 
-#include <iostream>
 #include <vector>
-#include <cmath>
 #include <algorithm>
-#include <map>
+#include <cstdint>
 
-class ANNS{
-    private:
-        int vector_dim;
-        int k;
+#include <omp.h>
+#include <immintrin.h> 
 
-        std::vector<std::vector<float>> query_vecs;
-        std::vector<std::vector<float>> data_vecs;
-        std::vector<std::vector<std::pair<int, double>>> closest_clusters;
-        std::vector<std::vector<std::pair<int, double>>> dist_lists{};
-    
-    public:
-        ANNS(const int& dim, const int& k_val, const std::vector<std::vector<float>>& query, const std::vector<std::vector<float>>& data) :
-        vector_dim(dim), k(k_val), query_vecs(query), data_vecs(data) {}
+inline int brute_euclidean(const std::vector<float>& vec_a, const std::vector<float>& vec_b, const int& vector_dim){
+    int dist = 0;
 
-        double brute_euclidean(std::vector<float> vec_a, std::vector<float> vec_b){
-            double dist = 0.0;
-            for(int i = 0; i < vector_dim; ++i){
-                dist += std::pow(vec_a[i] - vec_b[i], 2);
-            }
-            return std::sqrt(dist);
+    #pragma omp simd reduction(+:dist)   
+    for(int i = 0; i < vector_dim; ++i){
+        dist += (int(vec_a[i]) - int(vec_b[i]))*(int(vec_a[i]) - int(vec_b[i]));
+    }
+    return dist;
+} 
+
+// for unaligned data
+inline int fast_euclidean(const float* __restrict vec_a, const float* __restrict vec_b, const int& vector_dim) {
+    __m256 sum_vec = _mm256_setzero_ps();
+    int i = 0;
+
+    // Process in chunks of 8 floats
+    for (; i + 8 <= vector_dim; i += 8) {
+        if (i + 16 < vector_dim) {
+            _mm_prefetch((const char*)(vec_a + i + 16), _MM_HINT_T0);
+            _mm_prefetch((const char*)(vec_b + i + 16), _MM_HINT_T0);
         }
 
-        void sort(std::vector<std::pair<int, double>>& vec) {
-            std::sort(vec.begin(), vec.end(),[](const std::pair<int, double>& a, const std::pair<int, double>& b) {
-                return a.second < b.second;
-            });
-        }
+        __m256 a = _mm256_loadu_ps(vec_a + i);
+        __m256 b = _mm256_loadu_ps(vec_b + i);
+        __m256 diff = _mm256_sub_ps(a, b);
+        __m256 sq_diff = _mm256_mul_ps(diff, diff);
+        sum_vec = _mm256_add_ps(sum_vec, sq_diff);
+    }
 
-        void brute_knn(){
-            for(const std::vector<float>& q : query_vecs){
-                int i = 0;
-                std::vector<std::pair<int, double>> result_q;
-                for(std::vector<float>& v : data_vecs){
-                    double dist = brute_euclidean(q, v);
-                    result_q.push_back(std::make_pair(i, dist));
-                    ++i;
-                }
+    // Sum the vector of squared differences
+    float sum_array[8];
+    _mm256_storeu_ps(sum_array, sum_vec);
+    float dist = 0;
+    for (int j = 0; j < 8; ++j) {
+        dist += sum_array[j];
+    }
 
-                sort(result_q); 
+    // Handle remaining elements (if not divisible by 8)
+    for (; i < vector_dim; ++i) {
+        float diff = vec_a[i] - vec_b[i];
+        dist += diff * diff;
+    }
 
-                std::vector<std::pair<int, double>> k_result(result_q.begin(), result_q.begin() + k);
-                dist_lists.push_back(k_result);
-            }
-        }
+    return dist;
+}
 
-        void IVF_knn(const std::map<int, std::vector<std::pair<int, std::vector<float>>>>& IVF, int knn_cluster){
+// for aligned data 
+static inline float _mm256_reduce_add_ps(__m256 x) {
+  /* ( x3+x7, x2+x6, x1+x5, x0+x4 ) */
+  const __m128 x128 = _mm_add_ps(_mm256_extractf128_ps(x, 1), _mm256_castps256_ps128(x));
+  /* ( -, -, x1+x3+x5+x7, x0+x2+x4+x6 ) */
+  const __m128 x64 = _mm_add_ps(x128, _mm_movehl_ps(x128, x128));
+  /* ( -, -, -, x0+x1+x2+x3+x4+x5+x6+x7 ) */
+  const __m128 x32 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55));
+  /* Conversion to float is a no-op on x86-64 */
+  return _mm_cvtss_f32(x32);
+}
 
-            // Find closest clusters to each query
-            // Store results in closest_clusters: [[{v_0, d_0}...{v_k, d_k}], [{v_0, d_0}...{v_k, d_k}],...,[{v_0, d_0}...{v_k, d_k}]]  
-            //                                               query 1                    query 2         ...          query n
-            // v_i: vector index
-            // d_i: distance from query to closest vector
+inline float compute_distance_squared(int dim, const float* __restrict__ a, const float* __restrict__ b) {
+  a = (const float *)__builtin_assume_aligned(a, 32);
+  b = (const float *)__builtin_assume_aligned(b, 32);
 
-            for(const std::vector<float>& q: query_vecs){
-                std::vector<std::pair<int, double>> result_q;
-                for(const auto& data : IVF){
-                    std::vector<float> cluster = data.second[0].second;
-                    double dist = brute_euclidean(q, cluster);
-                    result_q.push_back(std::make_pair(data.first, dist));
-                }
-                sort(result_q);
-                std::vector<std::pair<int, double>> k_result(result_q.begin(), result_q.begin() + knn_cluster);
-                closest_clusters.push_back(k_result);
-            }
+  uint16_t niters = (uint16_t)(dim / 8);
+  __m256 sum = _mm256_setzero_ps();
+  for (uint16_t j = 0; j < niters; j++) {
+    if (j+1 < niters) {
+      _mm_prefetch((char *)(a + 8 * (j + 1)), _MM_HINT_T0);
+      _mm_prefetch((char *)(b + 8 * (j + 1)), _MM_HINT_T0);
+    }
+    __m256 a_vec = _mm256_load_ps(a + 8 * j);
+    __m256 b_vec = _mm256_load_ps(b + 8 * j);
+    __m256 tmp_vec = _mm256_sub_ps(a_vec, b_vec);
+    sum = _mm256_fmadd_ps(tmp_vec, tmp_vec, sum);
+  }
+  // horizontal add sum
+  return _mm256_reduce_add_ps(sum);
+}
 
-            // Perform KNN on vectors in each cluster 
-            // Loop over each query
-            for(int i = 0; i < static_cast<int>(query_vecs.size()); ++i){
-                const std::vector<float>& query_vec = query_vecs[i];
-                std::vector<std::pair<int, double>> result_q;
-
-                // Loop over each closest cluster to query i
-                for(int j = 0; j < static_cast<int>(closest_clusters[i].size()); ++j){
-                    int cluster_id = closest_clusters[i][j].first;
-                    const std::vector<std::pair<int, std::vector<float>>>& cluster_data = IVF.at(cluster_id);
-
-                    // Loop over each data point in the cluster and calculate distance to query
-                    for(int k = 1; k < static_cast<int>(cluster_data.size()); ++k){
-                        const std::vector<float>& point_vec = cluster_data[k].second;
-                        double dist = brute_euclidean(query_vec, point_vec);
-
-                        int key = cluster_data[k].first;
-                        result_q.push_back(std::make_pair(key, dist));
-                        ++key;
-                    }
-
-                }
-                sort(result_q);
-        
-                std::vector<std::pair<int, double>> k_result(result_q.begin(), result_q.begin() + k);
-                dist_lists.push_back(k_result);
-            }
-
-        }
-
-        std::vector<std::vector<std::pair<int, double>>> get_dist_lists(){
-            return dist_lists;
-        }
-
-        std::vector<std::vector<std::pair<int, double>>> get_closest_clusters(){
-            return closest_clusters;
-        }
-};
-    

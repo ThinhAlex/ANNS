@@ -1,172 +1,154 @@
 #pragma once
 
-#include <map>
-#include <vector>
+#include <iostream>
+#include <cstdlib>
+#include <chrono>
 #include <random>
 #include <limits>
-#include <map>
+#include <algorithm>
+#include <vector>
+#include <cstring>
+#include <iostream>
+#include <cstdlib>
+#include "distance.hpp"
+#include <omp.h>
 
-class KMeans{
-    private:
-        int num_clusters;
-        int base_dim;
-        std::vector<std::vector<float>> base_data;
-        std::vector<std::vector<std::pair<int, std::vector<float>>>> kmeans_results;
-        std::map<int, std::vector<std::pair<int, std::vector<float>>>> IVF;
+
+class KMeans {
+private:
+    int num_clusters;
+    int base_dim;
+    float* base_data;
+    float* clusters;
+    int* assignments; 
+    int num_points;
+
+    double build_time;
+
+public:
+    KMeans(int k, int dim, float* data, int data_size)
+        : num_clusters(k), base_dim(dim), base_data(data), num_points(data_size) {
         
+        clusters = static_cast<float*>(aligned_alloc(32, num_clusters * base_dim * sizeof(float)));
+        if (!clusters) throw std::bad_alloc();
 
-    public:
-        KMeans(const int& k, const int& vec_dim, const std::vector<std::vector<float>>& dataset) : 
-        num_clusters(k), base_dim(vec_dim), base_data(dataset) {}
-        
-        double euclidean(std::vector<float> vec_a, std::vector<float> vec_b){
-            double dist = 0.0;
-            for(int i = 0; i < base_dim; ++i){
-                dist += std::pow(vec_a[i] - vec_b[i], 2);
+        assignments = static_cast<int*>(malloc(num_points * sizeof(int)));
+        if (!assignments) throw std::bad_alloc();
+    }
+
+    ~KMeans() {
+        free(clusters);
+        free(assignments);
+    }
+
+    void initialize_clusters() {
+        std::mt19937 gen(42);
+        std::uniform_int_distribution<> distr(0,500);
+
+        #pragma omp parallel for
+        for (int i = 0; i < num_clusters; ++i) {
+            for (int j = 0; j < base_dim; ++j) {
+                clusters[i * base_dim + j] = static_cast<float>(distr(gen)); 
             }
-            return std::sqrt(dist);
         }
+    }
 
-        std::vector<std::vector<float>> create_clusters(){
-            const int min_val = 0;
-            const int max_val = 120;
+    void assign_clusters() {
+        for (int i = 0; i < num_points; ++i) {
+            float* point = base_data + i * base_dim;
+            int nearest_cluster = -1;
+            float min_dist = std::numeric_limits<float>::max();
+            for (int j = 0; j < num_clusters; ++j) {
+                float* cluster = clusters + j * base_dim;
+                float dist = compute_distance_squared(base_dim, point, cluster);
 
-            std::random_device rd;
-            std::mt19937 gen(rd());
-            std::uniform_int_distribution<> distr(min_val, max_val); 
-
-            std::vector<std::vector<float>> clusters(num_clusters);
-            for(int j = 0; j < num_clusters; ++j){
-                std::vector<float> cluster(base_dim);
-                for (int i = 0; i < base_dim; ++i) {
-                    cluster[i] = distr(gen); 
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    nearest_cluster = j;
                 }
-                clusters[j] = cluster;
+            }            
+            assignments[i] = nearest_cluster;
+        }
+    }
+
+    void update_clusters() {
+        // Temporary storage for cluster centers and point counts
+        float* new_clusters = static_cast<float*>(calloc(num_clusters * base_dim, sizeof(float)));
+        int* counts = static_cast<int*>(calloc(num_clusters, sizeof(int)));
+
+        for (int i = 0; i < num_points; ++i) {
+            int cluster_id = assignments[i];
+            float* point = base_data + i * base_dim;
+            float* cluster = new_clusters + cluster_id * base_dim;
+
+            for (int j = 0; j < base_dim; ++j) {
+                cluster[j] += point[j];
             }
-            return clusters;
+            counts[cluster_id]++;
         }
 
-        void assign_clusters_initial(std::vector<std::vector<float>> data, std::vector<std::vector<float>> clusters_list){
-            // Assign each data point to the nearest cluster 
-            // [[[c1], [p1], ... [pk]], [[c2], [p1], ... [pk]]]
-            std::vector<std::vector<std::pair<int, std::vector<float>>>> kmeans_list;
-
-            // Push clusters to kmeans_list
-            for(std::vector<float> cluster: clusters_list){
-                std::vector<std::pair<int, std::vector<float>>> cluster_i = {{-1, cluster}};
-                kmeans_list.push_back(cluster_i);
-            }
-
-            // Calculate distance from each cluster to data point
-            // Assign each data point to the nearest cluster  
-            for(int j = 0; j < data.size(); ++j){
-                const std::vector<float>& elem = data[j];
-                double min_dist = std::numeric_limits<double>::infinity();
-                int min_cluster_id = -1; 
-                for(int i = 0; i < num_clusters; ++i){
-                    double dist = euclidean(elem, clusters_list[i]);
-                    if(dist < min_dist){
-                        min_dist = dist;
-                        min_cluster_id = i;
-                    }
-                }
-                kmeans_list[min_cluster_id].push_back({j, elem}); 
-            }
-            kmeans_results.insert(kmeans_results.end(), kmeans_list.begin(), kmeans_list.end());
-        }
-
-        void assign_clusters(const std::vector<std::pair<int, std::vector<float>>>& cluster_data, const std::vector<std::vector<float>>& clusters_list){
-            // Assign each data point to the nearest cluster 
-            // [[[c1], [p1], ... [pk]], [[c2], [p1], ... [pk]]]
-            std::vector<std::vector<std::pair<int, std::vector<float>>>> kmeans_list;
-
-            // Push clusters to kmeans_list
-            for(std::vector<float> cluster: clusters_list){
-                std::vector<std::pair<int, std::vector<float>>> cluster_i = {{-1, cluster}};
-                kmeans_list.push_back(cluster_i);
-            }
-
-            // Calculate distance from each cluster to data point
-            // Assign each data point to the nearest cluster  
-            for(int j = 0; j < cluster_data.size(); ++j){
-                const std::vector<float>& elem = cluster_data[j].second;
-                double min_dist = std::numeric_limits<double>::infinity();
-                int min_cluster_id = -1; 
-                for(int i = 0; i < num_clusters; ++i){
-                    double dist = euclidean(elem, clusters_list[i]);
-                    if(dist < min_dist){
-                        min_dist = dist;
-                        min_cluster_id = i;
-                    }
-                }
-                kmeans_list[min_cluster_id].push_back({cluster_data[j].first, elem}); 
-            }
-            kmeans_results.insert(kmeans_results.end(), kmeans_list.begin(), kmeans_list.end());
-        }
-
-        int find_largest_cluster(){
-            int largest_size = 0;
-            int largest_cluster_id = -1;
-            for(int i = 0; i < static_cast<int>(kmeans_results.size()); ++i){
-                if(static_cast<int>(kmeans_results[i].size()) > largest_size){
-                    largest_size = static_cast<int>(kmeans_results[i].size());
-                    largest_cluster_id = i;
+        // Compute the new cluster centers
+        for (int i = 0; i < num_clusters; ++i) {
+            float* cluster = new_clusters + i * base_dim;
+            int count = counts[i];
+            if (count > 0) {
+                for (int j = 0; j < base_dim; ++j) {
+                    cluster[j] /= count;
                 }
             }
-            return largest_cluster_id;
         }
 
-        void bisect_kmeans(const int& max_num_clusters){ 
-            // For intitialization, we will run kmeans on the entire data 
-            std::vector<std::vector<float>> initial_clusters = create_clusters();
-            assign_clusters_initial(base_data, initial_clusters);
-            while(true){
-                // Check stopping condition
-                // kmeans_results: vector<vector<pair<int, vec<float>>>>
-                if(static_cast<int>(kmeans_results.size()) >= max_num_clusters){
-                    break;
-                }else{
-                    // Find the largest cluster
-                    int largest_cluster_id = find_largest_cluster();
+        std::memcpy(clusters, new_clusters, num_clusters * base_dim * sizeof(float));
 
-                    // Get data from chosen cluster and erase the cluster from data
-                    std::vector<std::pair<int, std::vector<float>>> cluster_data = kmeans_results[largest_cluster_id];
-                    cluster_data.erase(cluster_data.begin());
+        free(new_clusters);
+        free(counts);
+    }
 
-                    // Erase cluster from kmeans_results
-                    kmeans_results.erase(kmeans_results.begin() + largest_cluster_id);
+    void run_kmeans(int max_iterations) {
+        initialize_clusters();
 
-                    // Create new clusters
-                    std::vector<std::vector<float>> new_clusters = create_clusters();
-                    assign_clusters(cluster_data, new_clusters);
-                }
+        #pragma omp parallel for
+        for (int iter = 0; iter < max_iterations; ++iter) {
+            assign_clusters();
+            update_clusters();
+        }
+    }
+
+    float* get_clusters() const {
+        return clusters;
+    }
+
+    int* get_assignments() const {
+        return assignments;
+    }
+
+    std::vector<std::vector<int>> build_index() {
+        auto start = std::chrono::high_resolution_clock::now();
+        run_kmeans(300);  
+
+        std::vector<std::vector<int>> ivf(num_clusters);
+
+        for(int i = 0; i < num_points; ++i){
+            ivf[assignments[i]].push_back(i);
+        }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        build_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        return ivf;
+    }
+
+    double get_build_time() const {
+        return build_time;
+    }
+
+    void print_clusters() const {
+        std::cout << "Cluster centers:\n";
+        for (int i = 0; i < num_clusters; ++i) {
+            std::cout << "Cluster " << i << ": ";
+            for (int j = 0; j < base_dim; ++j) {
+                std::cout << clusters[i * base_dim + j] << " ";
             }
-                                
+            std::cout << std::endl;
         }
-
-        void build_index(const int& max_num_clusters){
-            // Run kmeans
-            bisect_kmeans(max_num_clusters);
-
-            // Build IVF index
-            for(int i = 0; i < static_cast<int>(kmeans_results.size()); ++i){
-                std::vector<std::pair<int, std::vector<float>>> data_in_cluster = kmeans_results[i];
-                IVF[i] = data_in_cluster;
-            }
-        }
-
-        std::vector<std::vector<std::pair<int, std::vector<float>>>> get_kmeans_clusters(){
-            return kmeans_results;
-        }
-
-        std::map<int, std::vector<std::pair<int, std::vector<float>>>> get_IVF(){
-            return IVF;
-        }
-
-        int get_IVF_size(){
-            return IVF.size();
-
-        }
-
-
+    }
 };
