@@ -7,16 +7,6 @@
 #include <omp.h>
 #include <immintrin.h> 
 
-inline int brute_euclidean(const std::vector<float>& vec_a, const std::vector<float>& vec_b, const int& vector_dim){
-    int dist = 0;
-
-    #pragma omp simd reduction(+:dist)   
-    for(int i = 0; i < vector_dim; ++i){
-        dist += (int(vec_a[i]) - int(vec_b[i]))*(int(vec_a[i]) - int(vec_b[i]));
-    }
-    return dist;
-} 
-
 // for unaligned data
 inline int fast_euclidean(const float* __restrict vec_a, const float* __restrict vec_b, const int& vector_dim) {
     __m256 sum_vec = _mm256_setzero_ps();

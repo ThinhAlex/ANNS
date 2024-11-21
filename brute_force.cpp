@@ -35,10 +35,10 @@ int main() {
     double latency = run_time / double(query_size);
 
     // Get lists of k distances
-    int* results = ann.get_dist_lists();  // results is a pointer to the top-k distances
+    int* results = ann.get_dist_lists(); 
 
     // Calculate recall
-    Recall recall(gt_data, base_data, query_data, results, base_dim, query_size, gt_dim, k);  // Adjust constructor to fit pointer-based data
+    Recall recall(gt_data, base_data, query_data, results, base_dim, query_size, gt_dim, k); 
     double recall_val = recall.get_recall();
     
     int num_threads = 0;

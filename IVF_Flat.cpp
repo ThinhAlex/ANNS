@@ -67,7 +67,7 @@ int main(){
     for(int i = 0; i < query_size; ++i){
         std::cout << "Query vector " << i+1 << ":" << std::endl;
         for(int j = 0; j < k_search; ++j){
-            std::cout << "Neighbor " << j+1 << ": (" << results[i*k_search + j].first << ", " << results[i*k_search + j].second << ")" << std::endl;
+            std::cout << "Neighbor " << j+1 << ": (" << dist_list[i*k_search + j].first << ", " << dist_list[i*k_search + j].second << ")" << std::endl;
         }
         std::cout << std::endl;
     }
